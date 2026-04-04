@@ -9,6 +9,7 @@ const listaDiv = document.getElementById("listaParticipantes");
 
 const sonidoClic = document.getElementById("sonidoClic");
 const sonidoGanador = document.getElementById("sonidoGanador");
+const sonidoFinal = document.getElementById("sonidoFinal");
 
 const modalGanador = document.getElementById("ganadorModal");
 const fotoGanadorModal = document.getElementById("ganadorFoto");
@@ -17,15 +18,48 @@ const btnCerrarModal = document.getElementById("btnCerrarGanador");
 const confetiContainer = document.getElementById("confeti");
 
 let participantes = [];
-const coloresDefault = ["#FF0000", "#FF7F00", "#FFFF00", "#00FF00", "#0000FF", "#4B0082"];
 let anguloActual = 0;
 let velocidad = 0;
 const friccion = 0.993;
 let ultimoIndiceSonido = -1;
+let finalReproducido = false;
 
-// --- BASE DE DATOS LOCAL ---
+// --- OPTIMIZACIÓN DE AUDIO CON VOLUMEN FORZADO AL MÁXIMO ---
+let ultimaVezSonido = 0;
+const intervaloMinimoAudio = 45; 
+
+function reproducirClic(vol) {
+    const ahora = Date.now();
+    if (velocidad > 0.04 && ahora - ultimaVezSonido > intervaloMinimoAudio) {
+        if (sonidoClic) {
+            sonidoClic.pause(); // Reset físico del buffer
+            sonidoClic.currentTime = 0;
+            // FORZADO AL MÁXIMO (1.0) para compensar archivos con baja ganancia
+            sonidoClic.volume = 1.0; 
+            sonidoClic.play().catch(() => {});
+            ultimaVezSonido = ahora;
+        }
+    }
+}
+
+// --- DESBLOQUEO DE AUDIO ---
+document.body.addEventListener('click', () => {
+    [sonidoClic, sonidoGanador, sonidoFinal].forEach(s => {
+        if (s) {
+            s.play().then(() => {
+                s.pause();
+                s.currentTime = 0;
+            }).catch(() => {});
+        }
+    });
+}, { once: true });
+
+function obtenerColorVariado(i) {
+    const hue = (i * 137.5) % 360;
+    return `hsl(${hue}, 85%, 60%)`;
+}
+
 function guardarEnBDLocal() {
-    // Convertimos a un formato que el navegador pueda guardar (JSON)
     const datosParaGuardar = participantes.map(p => ({
         nombre: p.nombre,
         color: p.color,
@@ -53,11 +87,11 @@ function cargarDesdeBDLocal() {
     }
 }
 
-// --- FUNCIÓN PARA INICIAR EL GIRO ---
 function iniciarGiro() {
     if (velocidad === 0 && participantes.length > 0) {
         ocultarGanador();
         ultimoIndiceSonido = -1;
+        finalReproducido = false;
         velocidad = Math.random() * 0.3 + 0.45;
         animar();
     }
@@ -79,7 +113,6 @@ canvas.onmousemove = (event) => {
     canvas.style.cursor = (distancia < 80) ? "pointer" : "default";
 };
 
-// --- AGREGAR ---
 btnAgregar.onclick = () => {
     const nombre = inputNombre.value.trim();
     if (!nombre) return;
@@ -89,9 +122,13 @@ btnAgregar.onclick = () => {
     reader.onload = (e) => {
         const img = new Image();
         img.onload = () => {
-            participantes.push({ nombre, imagen: img, color: coloresDefault[participantes.length % 6] });
+            participantes.push({ 
+                nombre, 
+                imagen: img, 
+                color: obtenerColorVariado(participantes.length)
+            });
             actualizarTodo();
-            guardarEnBDLocal(); // <--- GUARDAR EN BD
+            guardarEnBDLocal();
         };
         img.src = e.target.result;
     };
@@ -101,9 +138,13 @@ btnAgregar.onclick = () => {
         const imgDef = new Image();
         imgDef.src = "https://cdn-icons-png.flaticon.com/512/149/149071.png";
         imgDef.onload = () => {
-            participantes.push({ nombre, imagen: imgDef, color: coloresDefault[participantes.length % 6] });
+            participantes.push({ 
+                nombre, 
+                imagen: imgDef, 
+                color: obtenerColorVariado(participantes.length)
+            });
             actualizarTodo();
-            guardarEnBDLocal(); // <--- GUARDAR EN BD
+            guardarEnBDLocal();
         };
     }
 };
@@ -118,7 +159,6 @@ function dibujar() {
     const centro = 250;
     const radio = 250;
 
-    // Aro Multicolor Externo
     ctx.save();
     const grad = ctx.createConicGradient(anguloActual, centro, centro);
     grad.addColorStop(0, "#ff0000"); grad.addColorStop(0.2, "#ffff00");
@@ -144,13 +184,18 @@ function dibujar() {
     const indiceActual = Math.floor(anguloFlecha / arco) % participantes.length;
     
     if (indiceActual !== ultimoIndiceSonido && velocidad > 0.005) {
-        if (sonidoClic) {
-            sonidoClic.pause();
-            sonidoClic.currentTime = 0;
-            sonidoClic.playbackRate = 0.85; 
-            sonidoClic.play().catch(() => {});
-        }
+        reproducirClic(velocidad);
         ultimoIndiceSonido = indiceActual;
+    }
+
+    // SONIDO FINAL AL MÁXIMO VOLUMEN (1.0)
+    if (velocidad < 0.04 && velocidad > 0.001 && !finalReproducido) {
+        if (sonidoFinal) {
+            sonidoFinal.currentTime = 0;
+            sonidoFinal.volume = 1.0; 
+            sonidoFinal.play().catch(() => {});
+            finalReproducido = true;
+        }
     }
 
     const pActual = participantes[indiceActual];
@@ -172,8 +217,14 @@ function animar() {
         requestAnimationFrame(animar);
     } else if (velocidad !== 0) {
             velocidad = 0;
-            sonidoGanador.currentTime = 0;
-            sonidoGanador.play().catch(() => {});
+            if (sonidoFinal) {
+                sonidoFinal.pause();
+            }
+            if (sonidoGanador) {
+                sonidoGanador.currentTime = 0;
+                sonidoGanador.volume = 1.0; // VOLUMEN GANADOR AL MÁXIMO
+                sonidoGanador.play().catch(() => {});
+            }
             const arcoFinal = (Math.PI * 2) / participantes.length;
             let angFinal = (1.5 * Math.PI) - (anguloActual % (Math.PI * 2));
             if (angFinal < 0) angFinal += Math.PI * 2;
@@ -186,12 +237,14 @@ function animar() {
 function mostrarGanador(ganador) {
     fotoGanadorModal.src = ganador.imagen.src;
     nombreGanadorModal.innerText = ganador.nombre;
-    modalGanador.className = "modal-visible";
+    modalGanador.classList.add("modal-visible");
+    modalGanador.style.display = "flex";
     lanzarConfeti();
 }
 
 function ocultarGanador() {
-    modalGanador.className = "modal-oculto";
+    modalGanador.classList.remove("modal-visible");
+    modalGanador.style.display = "none";
     limpiarConfeti();
 }
 
@@ -200,7 +253,7 @@ btnSpin.onclick = iniciarGiro;
 
 btnLimpiar.onclick = () => { 
     participantes = []; 
-    localStorage.removeItem("ruleta_data"); // <--- BORRAR BD
+    localStorage.removeItem("ruleta_data"); 
     actualizarTodo(); 
 };
 
@@ -216,7 +269,7 @@ function renderLista() {
 
 window.eliminar = (i) => { 
     participantes.splice(i, 1); 
-    guardarEnBDLocal(); // <--- ACTUALIZAR BD
+    guardarEnBDLocal(); 
     actualizarTodo(); 
 };
 
@@ -236,6 +289,5 @@ function limpiarConfeti() {
     confetiContainer.innerHTML = '';
 }
 
-// --- AL CARGAR LA PÁGINA ---
 cargarDesdeBDLocal();
 dibujar();
