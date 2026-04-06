@@ -7,9 +7,7 @@ const btnSpin = document.getElementById("btnSpin");
 const btnLimpiar = document.getElementById("btnLimpiar");
 const listaDiv = document.getElementById("listaParticipantes");
 
-const sonidoClic = document.getElementById("sonidoClic");
 const sonidoGanador = document.getElementById("sonidoGanador");
-const sonidoFinal = document.getElementById("sonidoFinal");
 
 const modalGanador = document.getElementById("ganadorModal");
 const fotoGanadorModal = document.getElementById("ganadorFoto");
@@ -22,41 +20,64 @@ let anguloActual = 0;
 let velocidad = 0;
 const friccion = 0.993;
 let ultimoIndiceSonido = -1;
-let finalReproducido = false;
 
-// --- OPTIMIZACIÓN DE AUDIO CON VOLUMEN FORZADO AL MÁXIMO ---
-let ultimaVezSonido = 0;
-const intervaloMinimoAudio = 45; 
+// --- AUDIO CON AudioContext ---
+let audioCtx = null;
+let clicBuffer = null;
+let clicEnProceso = false; // evita que se dispare multiple veces
 
-function reproducirClic(vol) {
-    const ahora = Date.now();
-    if (velocidad > 0.04 && ahora - ultimaVezSonido > intervaloMinimoAudio) {
-        if (sonidoClic) {
-            sonidoClic.pause(); // Reset físico del buffer
-            sonidoClic.currentTime = 0;
-            // FORZADO AL MÁXIMO (1.0) para compensar archivos con baja ganancia
-            sonidoClic.volume = 1.0; 
-            sonidoClic.play().catch(() => {});
-            ultimaVezSonido = ahora;
-        }
-    }
+function iniciarAudioContext() {
+    if (audioCtx) return;
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+    fetch("clic_final.mp3")
+        .then(r => r.arrayBuffer())
+        .then(data => audioCtx.decodeAudioData(data))
+        .then(buffer => { clicBuffer = buffer; })
+        .catch(() => {
+            // Si no existe el mp3, genera un tono corto
+            const buf = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.04, audioCtx.sampleRate);
+            const data = buf.getChannelData(0);
+            for (let i = 0; i < data.length; i++) {
+                data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / data.length, 4);
+            }
+            clicBuffer = buf;
+        });
 }
 
-// --- DESBLOQUEO DE AUDIO ---
+// Solo se reproduce UNA VEZ por cambio de sección — espera a que termine antes del siguiente
+function reproducirClic() {
+    if (!audioCtx || !clicBuffer || clicEnProceso) return;
+    clicEnProceso = true;
+
+    const source = audioCtx.createBufferSource();
+    source.buffer = clicBuffer;
+
+    const gain = audioCtx.createGain();
+    gain.gain.value = 15.0; // Amplificado al máximo sin distorsión
+
+    source.connect(gain);
+    gain.connect(audioCtx.destination);
+    source.start();
+
+    // Libera el bloqueo cuando el sonido termina
+    source.onended = () => { clicEnProceso = false; };
+}
+
+// Desbloqueo de audio al primer clic del usuario
 document.body.addEventListener('click', () => {
-    [sonidoClic, sonidoGanador, sonidoFinal].forEach(s => {
-        if (s) {
-            s.play().then(() => {
-                s.pause();
-                s.currentTime = 0;
-            }).catch(() => {});
-        }
-    });
+    iniciarAudioContext();
+    if (sonidoGanador) {
+        sonidoGanador.play().then(() => {
+            sonidoGanador.pause();
+            sonidoGanador.currentTime = 0;
+        }).catch(() => {});
+    }
 }, { once: true });
 
 function obtenerColorVariado(i) {
-    const hue = (i * 137.5) % 360;
-    return `hsl(${hue}, 85%, 60%)`;
+    const colores = ["#ffffff", "#1565C0", "#FFD600", "#D32F2F"];
+    return colores[i % colores.length];
 }
 
 function guardarEnBDLocal() {
@@ -89,9 +110,10 @@ function cargarDesdeBDLocal() {
 
 function iniciarGiro() {
     if (velocidad === 0 && participantes.length > 0) {
+        iniciarAudioContext();
         ocultarGanador();
         ultimoIndiceSonido = -1;
-        finalReproducido = false;
+        clicEnProceso = false;
         velocidad = Math.random() * 0.3 + 0.45;
         animar();
     }
@@ -122,11 +144,7 @@ btnAgregar.onclick = () => {
     reader.onload = (e) => {
         const img = new Image();
         img.onload = () => {
-            participantes.push({ 
-                nombre, 
-                imagen: img, 
-                color: obtenerColorVariado(participantes.length)
-            });
+            participantes.push({ nombre, imagen: img, color: obtenerColorVariado(participantes.length) });
             actualizarTodo();
             guardarEnBDLocal();
         };
@@ -138,11 +156,7 @@ btnAgregar.onclick = () => {
         const imgDef = new Image();
         imgDef.src = "https://cdn-icons-png.flaticon.com/512/149/149071.png";
         imgDef.onload = () => {
-            participantes.push({ 
-                nombre, 
-                imagen: imgDef, 
-                color: obtenerColorVariado(participantes.length)
-            });
+            participantes.push({ nombre, imagen: imgDef, color: obtenerColorVariado(participantes.length) });
             actualizarTodo();
             guardarEnBDLocal();
         };
@@ -174,7 +188,7 @@ function dibujar() {
         const ang = anguloActual + i * arco;
         ctx.beginPath(); ctx.fillStyle = p.color; ctx.moveTo(centro, centro);
         ctx.arc(centro, centro, radio - 12, ang, ang + arco); ctx.fill();
-        ctx.save(); ctx.translate(centro, centro); ctx.rotate(ang + arco/2);
+        ctx.save(); ctx.translate(centro, centro); ctx.rotate(ang + arco / 2);
         ctx.textAlign = "right"; ctx.fillStyle = "white"; ctx.font = "bold 14px Arial";
         ctx.fillText(p.nombre.substring(0, 15), radio - 40, 5); ctx.restore();
     });
@@ -182,30 +196,21 @@ function dibujar() {
     let anguloFlecha = (1.5 * Math.PI) - (anguloActual % (Math.PI * 2));
     if (anguloFlecha < 0) anguloFlecha += Math.PI * 2;
     const indiceActual = Math.floor(anguloFlecha / arco) % participantes.length;
-    
-    if (indiceActual !== ultimoIndiceSonido && velocidad > 0.005) {
-        reproducirClic(velocidad);
-        ultimoIndiceSonido = indiceActual;
-    }
 
-    // SONIDO FINAL AL MÁXIMO VOLUMEN (1.0)
-    if (velocidad < 0.04 && velocidad > 0.001 && !finalReproducido) {
-        if (sonidoFinal) {
-            sonidoFinal.currentTime = 0;
-            sonidoFinal.volume = 1.0; 
-            sonidoFinal.play().catch(() => {});
-            finalReproducido = true;
-        }
+    // Clic SOLO cuando cambia de sección — una única vez por sección
+    if (indiceActual !== ultimoIndiceSonido) {
+        ultimoIndiceSonido = indiceActual;
+        if (velocidad > 0.008) reproducirClic();
     }
 
     const pActual = participantes[indiceActual];
     if (pActual) {
         ctx.save();
-        ctx.beginPath(); ctx.arc(centro, centro, 80, 0, Math.PI*2); ctx.clip();
+        ctx.beginPath(); ctx.arc(centro, centro, 80, 0, Math.PI * 2); ctx.clip();
         ctx.drawImage(pActual.imagen, 170, 170, 160, 160);
         ctx.restore();
-        ctx.beginPath(); ctx.arc(centro, centro, 80, 0, Math.PI*2);
-        ctx.strokeStyle = "#00ff00"; ctx.lineWidth = 5; ctx.stroke();
+        ctx.beginPath(); ctx.arc(centro, centro, 80, 0, Math.PI * 2);
+        ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 5; ctx.stroke();
     }
 }
 
@@ -216,21 +221,18 @@ function animar() {
         dibujar();
         requestAnimationFrame(animar);
     } else if (velocidad !== 0) {
-            velocidad = 0;
-            if (sonidoFinal) {
-                sonidoFinal.pause();
-            }
-            if (sonidoGanador) {
-                sonidoGanador.currentTime = 0;
-                sonidoGanador.volume = 1.0; // VOLUMEN GANADOR AL MÁXIMO
-                sonidoGanador.play().catch(() => {});
-            }
-            const arcoFinal = (Math.PI * 2) / participantes.length;
-            let angFinal = (1.5 * Math.PI) - (anguloActual % (Math.PI * 2));
-            if (angFinal < 0) angFinal += Math.PI * 2;
-            const ganador = participantes[Math.floor(angFinal / arcoFinal) % participantes.length];
-            if (ganador) mostrarGanador(ganador);
-            dibujar();
+        velocidad = 0;
+        if (sonidoGanador) {
+            sonidoGanador.currentTime = 0;
+            sonidoGanador.volume = 1.0;
+            sonidoGanador.play().catch(() => {});
+        }
+        const arcoFinal = (Math.PI * 2) / participantes.length;
+        let angFinal = (1.5 * Math.PI) - (anguloActual % (Math.PI * 2));
+        if (angFinal < 0) angFinal += Math.PI * 2;
+        const ganador = participantes[Math.floor(angFinal / arcoFinal) % participantes.length];
+        if (ganador) mostrarGanador(ganador);
+        dibujar();
     }
 }
 
@@ -251,10 +253,10 @@ function ocultarGanador() {
 btnCerrarModal.onclick = ocultarGanador;
 btnSpin.onclick = iniciarGiro;
 
-btnLimpiar.onclick = () => { 
-    participantes = []; 
-    localStorage.removeItem("ruleta_data"); 
-    actualizarTodo(); 
+btnLimpiar.onclick = () => {
+    participantes = [];
+    localStorage.removeItem("ruleta_data");
+    actualizarTodo();
 };
 
 function renderLista() {
@@ -267,10 +269,10 @@ function renderLista() {
     });
 }
 
-window.eliminar = (i) => { 
-    participantes.splice(i, 1); 
-    guardarEnBDLocal(); 
-    actualizarTodo(); 
+window.eliminar = (i) => {
+    participantes.splice(i, 1);
+    guardarEnBDLocal();
+    actualizarTodo();
 };
 
 const coloresConfeti = ['#ff0', '#f0f', '#0ff', '#0f0', '#ff5733', '#fff'];
