@@ -21,47 +21,39 @@ let velocidad = 0;
 const friccion = 0.993;
 let ultimoIndiceSonido = -1;
 
-// --- AUDIO CON AudioContext ---
+// --- AUDIO MEJORADO CON AudioContext ---
 let audioCtx = null;
-let clicBuffer = null;
-let clicEnProceso = false; // evita que se dispare multiple veces
+let clicEnProceso = false;
 
 function iniciarAudioContext() {
     if (audioCtx) return;
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-
-    fetch("clic_final.mp3")
-        .then(r => r.arrayBuffer())
-        .then(data => audioCtx.decodeAudioData(data))
-        .then(buffer => { clicBuffer = buffer; })
-        .catch(() => {
-            // Si no existe el mp3, genera un tono corto
-            const buf = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.04, audioCtx.sampleRate);
-            const data = buf.getChannelData(0);
-            for (let i = 0; i < data.length; i++) {
-                data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / data.length, 4);
-            }
-            clicBuffer = buf;
-        });
 }
 
-// Solo se reproduce UNA VEZ por cambio de sección — espera a que termine antes del siguiente
+// Tick de ruleta — tono varía con la velocidad
 function reproducirClic() {
-    if (!audioCtx || !clicBuffer || clicEnProceso) return;
+    if (!audioCtx || clicEnProceso) return;
     clicEnProceso = true;
 
-    const source = audioCtx.createBufferSource();
-    source.buffer = clicBuffer;
+    const oscillator = audioCtx.createOscillator();
+    const gainNode = audioCtx.createGain();
 
-    const gain = audioCtx.createGain();
-    gain.gain.value = 15.0; // Amplificado al máximo sin distorsión
+    const frecuencia = Math.min(800, 200 + (velocidad * 1500));
 
-    source.connect(gain);
-    gain.connect(audioCtx.destination);
-    source.start();
+    oscillator.type = 'triangle';
+    oscillator.frequency.setValueAtTime(frecuencia, audioCtx.currentTime);
+    oscillator.frequency.exponentialRampToValueAtTime(frecuencia * 0.5, audioCtx.currentTime + 0.05);
 
-    // Libera el bloqueo cuando el sonido termina
-    source.onended = () => { clicEnProceso = false; };
+    gainNode.gain.setValueAtTime(0.6, audioCtx.currentTime);
+    gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.08);
+
+    oscillator.connect(gainNode);
+    gainNode.connect(audioCtx.destination);
+
+    oscillator.start(audioCtx.currentTime);
+    oscillator.stop(audioCtx.currentTime + 0.08);
+
+    oscillator.onended = () => { clicEnProceso = false; };
 }
 
 // Desbloqueo de audio al primer clic del usuario
@@ -189,15 +181,17 @@ function dibujar() {
         ctx.beginPath(); ctx.fillStyle = p.color; ctx.moveTo(centro, centro);
         ctx.arc(centro, centro, radio - 12, ang, ang + arco); ctx.fill();
         ctx.save(); ctx.translate(centro, centro); ctx.rotate(ang + arco / 2);
-        ctx.textAlign = "right"; ctx.fillStyle = "white"; ctx.font = "bold 14px Arial";
-        ctx.fillText(p.nombre.substring(0, 15), radio - 40, 5); ctx.restore();
+        ctx.textAlign = "right"; ctx.font = "bold 14px Arial";
+        ctx.strokeStyle = "black"; ctx.lineWidth = 3; ctx.lineJoin = "round";
+        ctx.strokeText(p.nombre.substring(0, 15), radio - 40, 5);
+        ctx.fillStyle = "white"; ctx.fillText(p.nombre.substring(0, 15), radio - 40, 5);
+        ctx.restore();
     });
 
     let anguloFlecha = (1.5 * Math.PI) - (anguloActual % (Math.PI * 2));
     if (anguloFlecha < 0) anguloFlecha += Math.PI * 2;
     const indiceActual = Math.floor(anguloFlecha / arco) % participantes.length;
 
-    // Clic SOLO cuando cambia de sección — una única vez por sección
     if (indiceActual !== ultimoIndiceSonido) {
         ultimoIndiceSonido = indiceActual;
         if (velocidad > 0.008) reproducirClic();
